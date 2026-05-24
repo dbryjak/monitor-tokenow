@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Pytest
+.pytest_cache/
+
+# Config z danymi osobistymi (saldo, klucz API)
+src/config.json
+
+# Logi i dane runtime
+data/usage.log
+data/dzisiaj.json
+
+# Debug
+err.txt
+out.txt
+debug_*.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

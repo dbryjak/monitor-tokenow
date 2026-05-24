@@ -1,0 +1,42 @@
+{
+  "name": "monitor-tokenow",
+  "displayName": "Monitor Tokenów Anthropic",
+  "description": "Śledzi zużycie tokenów i koszty API Anthropic w czasie rzeczywistym",
+  "version": "0.1.0",
+  "publisher": "dbcraftmode",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "monitorTokenow.pokazSzczegoly",
+        "title": "Monitor Tokenów: Pokaż szczegóły dnia"
+      }
+    ],
+    "configuration": {
+      "title": "Monitor Tokenów",
+      "properties": {
+        "monitorTokenow.sciezkaDzisiaj": {
+          "type": "string",
+          "default": "D:\\MOJE PROJEKTY\\Monitor-Tokenow\\data\\dzisiaj.json",
+          "description": "Ścieżka do pliku dzisiaj.json (generowany przez monitor_api.py)"
+        },
+        "monitorTokenow.limitDzienny": {
+          "type": "number",
+          "default": 10.00,
+          "description": "Dzienny limit budżetu w USD. Ostrzeżenie przy 80%, alarm przy 95%."
+        },
+        "monitorTokenow.czestotliwoscSekund": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "description": "Co ile sekund odświeżać dane na pasku statusu"
+        }
+      }
+    }
+  }
+}

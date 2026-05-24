@@ -1,0 +1,21 @@
+{
+  "_komentarz": "Skopiuj ten plik jako config.json i uzupełnij wartości.",
+  "api": {
+    "klucz": "sk-ant-TWOJ-KLUCZ-TUTAJ",
+    "_uwaga_klucz": "Nigdy nie wrzucaj prawdziwego klucza do repozytorium git!"
+  },
+  "model": "claude-haiku-4-5-20251001",
+  "tryb": "pro",
+  "_komentarz_tryb": "Tryb rozliczenia: 'pro' = abonament Claude.ai, 'api' = kredyty Anthropic",
+  "budzet": {
+    "dzienny_limit_usd": 10.0,
+    "prog_ostrzezenia_procent": 80
+  },
+  "monitoring": {
+    "czestotliwosc_odswiezania_sekund": 60
+  },
+  "logi": {
+    "sciezka_pliku": "../data/usage.log",
+    "poziom": "INFO"
+  }
+}
