@@ -8,15 +8,28 @@ Klik na ikonę przy zegarku → otwiera / ukrywa okienko.
 Prawy klik → menu: przełącz PRO/API, zakończ.
 """
 
+import ctypes
 import json
+import re
 import threading
 import time
 import tkinter as tk
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pystray
 from PIL import Image, ImageDraw, ImageFont
+
+
+def _ciemny_pasek_tytulu(root: tk.Tk) -> None:
+    """Ciemny pasek tytułu (Windows 10 20H1+ / Windows 11)."""
+    try:
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        DARK = ctypes.c_int(1)
+        # atrybut 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win10 20H1+)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(DARK), ctypes.sizeof(DARK))
+    except Exception:
+        pass  # starszy Windows — ignoruj
 
 # ── Ścieżki ───────────────────────────────────────────────────────────────────
 CONFIG_JSON  = Path(r"D:\MOJE PROJEKTY\Monitor-Tokenow\src\config.json")
@@ -196,6 +209,94 @@ def auto_zapisz_date_salda(cfg, sciezka=None):
     return cfg
 
 
+# ── Auto-detekcja rate-limitu z plików JSONL ──────────────────────────────────
+
+def _parsuj_reset_czas(tekst: str):
+    """Parsuje czas resetu z komunikatu Claude, np. 'resets 8pm (Europe/Warsaw)'.
+    Zwraca datetime lub None."""
+    m = re.search(r'resets\s+(\d+)(?::(\d+))?\s*(am|pm)', tekst, re.IGNORECASE)
+    if not m:
+        return None
+    godz  = int(m.group(1))
+    min_  = int(m.group(2) or 0)
+    ampm  = m.group(3).lower()
+    if ampm == "pm" and godz != 12:
+        godz += 12
+    elif ampm == "am" and godz == 12:
+        godz = 0
+    teraz  = datetime.now()
+    reset  = teraz.replace(hour=godz, minute=min_, second=0, microsecond=0)
+    if reset <= teraz:
+        reset += timedelta(days=1)
+    return reset
+
+
+class RateLimitWatcher:
+    """Obserwuje pliki JSONL w tle i wykrywa komunikaty rate-limit od Claude."""
+
+    CLAUDE_DIR = Path.home() / ".claude"
+    SPRAWDZAJ_CO = 5  # sekund
+
+    def __init__(self, callback_wykryto):
+        """callback_wykryto(reset_datetime) — wywoływane gdy limit wykryty."""
+        self._callback  = callback_wykryto
+        self._pozycje   = {}   # ścieżka → rozmiar pliku przy ostatnim odczycie
+        self._stop_evt  = threading.Event()
+        self._watek     = threading.Thread(target=self._petla, daemon=True)
+        self._watek.start()
+
+    def stop(self):
+        self._stop_evt.set()
+
+    def _petla(self):
+        while not self._stop_evt.wait(self.SPRAWDZAJ_CO):
+            try:
+                self._sprawdz()
+            except Exception:
+                pass
+
+    def _sprawdz(self):
+        for plik in self.CLAUDE_DIR.rglob("*.jsonl"):
+            try:
+                rozmiar = plik.stat().st_size
+            except OSError:
+                continue
+            ostatni = self._pozycje.get(plik, 0)
+            if rozmiar <= ostatni:
+                self._pozycje[plik] = rozmiar
+                continue
+            # Czytaj tylko nowe linie
+            try:
+                with plik.open("r", encoding="utf-8", errors="ignore") as f:
+                    f.seek(ostatni)
+                    nowe = f.read()
+                self._pozycje[plik] = rozmiar
+            except OSError:
+                continue
+            for linia in nowe.splitlines():
+                if not linia.strip():
+                    continue
+                try:
+                    dane = json.loads(linia)
+                except json.JSONDecodeError:
+                    continue
+                # Sprawdź czy to wpis rate-limit
+                if dane.get("error") != "rate_limit":
+                    continue
+                if dane.get("apiErrorStatus") != 429:
+                    continue
+                # Wyciągnij tekst z treści wiadomości
+                tresc = ""
+                msg = dane.get("message", {})
+                for blok in msg.get("content", []):
+                    if isinstance(blok, dict) and blok.get("type") == "text":
+                        tresc += blok.get("text", "")
+                reset = _parsuj_reset_czas(tresc)
+                if reset:
+                    self._callback(reset)
+                    return  # jeden callback wystarczy
+
+
 # ── Ikona tray ────────────────────────────────────────────────────────────────
 
 def stworz_ikone(tryb, alarm=False):
@@ -273,6 +374,10 @@ class OkienkoDane:
         # Nie pokazuj w pasku zadań — okienko chowa się do tray
         root.attributes("-toolwindow", True)
 
+        # Ciemny pasek tytułu (spójny z ciemnym motywem okienka)
+        root.update_idletasks()
+        _ciemny_pasek_tytulu(root)
+
         # "X" = tylko ukryj (nie wyłącza programu)
         root.protocol("WM_DELETE_WINDOW", self.ukryj)
 
@@ -334,10 +439,36 @@ class OkienkoDane:
             self.pro_f, "  Ekwiwalent API (teoretyczny)",
             kol_wartosc=K["tekst2"], font_val=F_NORM)
 
-        # Status rate-limit
-        self.lbl_rl = tk.Label(self.pro_f, text="", bg=K["tlo2"],
-                               fg=K["zolty"], font=F_SMALL)
-        self.lbl_rl.pack(anchor="w", padx=8, pady=(0, 6))
+        # ── Panel rate-limit ──────────────────────────────────────────────
+        self.rl_f = tk.Frame(self.pro_f, bg=K["tlo2"])
+        self.rl_f.pack(fill="x", padx=8, pady=(2, 6))
+
+        # Wiersz górny: status + przycisk
+        rl_top = tk.Frame(self.rl_f, bg=K["tlo2"])
+        rl_top.pack(fill="x")
+
+        self.lbl_rl_status = tk.Label(rl_top, text="", bg=K["tlo2"], font=F_SMALL)
+        self.lbl_rl_status.pack(side="left")
+
+        self.btn_rl_ustaw = tk.Button(
+            rl_top, text="⏱ Ustaw", font=F_SMALL,
+            bg=K["btn_wyl"], fg=K["tekst2"],
+            relief="flat", cursor="hand2", bd=0,
+            command=self._dialog_rate_limit)
+        self.btn_rl_ustaw.pack(side="right", padx=2)
+
+        self.btn_rl_clear = tk.Button(
+            rl_top, text="✕ Wyczyść", font=F_SMALL,
+            bg=K["btn_wyl"], fg=K["tekst_dim"],
+            relief="flat", cursor="hand2", bd=0,
+            command=self._wyczysc_rate_limit)
+        # nie pack — pokazujemy tylko gdy aktywny
+
+        # Wiersz odliczania (widoczny tylko gdy aktywny)
+        self.lbl_rl_countdown = tk.Label(
+            self.rl_f, text="", bg=K["tlo2"],
+            fg=K["czerwony"], font=(FONT, 18, "bold"))
+        # nie pack — pokazujemy tylko gdy aktywny
 
         separator(root)
 
@@ -389,9 +520,127 @@ class OkienkoDane:
                                   fg=K["tekst_dim"], font=F_SMALL)
         self.lbl_czas.pack(pady=(0, 12))
 
-        # Pierwsze odświeżenie
+        # Pierwsze odświeżenie + uruchom countdown jeśli limit był zapisany
         root.after(100, self._odswiez)
+        root.after(200, self._start_countdown_rl)
         root.mainloop()
+
+    def _dialog_rate_limit(self):
+        """Dialog: wpisz ile minut zostało z komunikatu Claude."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Ustaw rate limit")
+        dialog.configure(bg=K["tlo"])
+        dialog.resizable(False, False)
+        dialog.attributes("-topmost", True)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Claude napisał: \"możesz korzystać za X minut\"",
+                 bg=K["tlo"], fg=K["tekst2"], font=F_SMALL).pack(padx=20, pady=(14, 2))
+        tk.Label(dialog, text="Ile minut wpisał?",
+                 bg=K["tlo"], fg=K["tekst"], font=F_BOLD).pack(padx=20, pady=(0, 4))
+
+        entry = tk.Entry(dialog, font=(FONT, 22, "bold"), bg=K["tlo2"],
+                         fg=K["czerwony"], insertbackground=K["czerwony"],
+                         relief="flat", justify="center", width=6)
+        entry.pack(padx=20, pady=4)
+        entry.focus_set()
+
+        info = tk.Label(dialog, text="", bg=K["tlo"], fg=K["tekst_dim"], font=F_SMALL)
+        info.pack(pady=2)
+
+        def zatwierdz():
+            tekst = entry.get().strip()
+            try:
+                minuty = int(tekst)
+                if minuty <= 0 or minuty > 240:
+                    raise ValueError
+            except ValueError:
+                info.config(text="⚠  Wpisz liczbę minut (1–240)", fg=K["czerwony"])
+                return
+            koniec = datetime.now() + __import__("datetime").timedelta(minutes=minuty)
+            cfg = wczytaj_config()
+            cfg["rate_limit_do"] = koniec.strftime("%Y-%m-%d %H:%M:%S")
+            CONFIG_JSON.write_text(
+                json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            dialog.destroy()
+            self._start_countdown_rl()
+
+        btn_f = tk.Frame(dialog, bg=K["tlo"])
+        btn_f.pack(pady=(8, 16))
+        tk.Button(btn_f, text="Zapisz", font=F_BOLD,
+                  bg=K["czerwony"], fg="white", relief="flat",
+                  cursor="hand2", width=10, command=zatwierdz).pack(side="left", padx=6)
+        tk.Button(btn_f, text="Anuluj", font=F_NORM,
+                  bg=K["btn_wyl"], fg=K["tekst2"], relief="flat",
+                  cursor="hand2", width=8, command=dialog.destroy).pack(side="left", padx=6)
+
+        entry.bind("<Return>", lambda e: zatwierdz())
+        entry.bind("<Escape>", lambda e: dialog.destroy())
+
+    def _wyczysc_rate_limit(self):
+        """Ręczne wyczyszczenie rate-limitu."""
+        cfg = wczytaj_config()
+        cfg.pop("rate_limit_do", None)
+        CONFIG_JSON.write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._ukryj_countdown()
+
+    def _start_countdown_rl(self):
+        """Uruchamia pętlę odliczającą co sekundę."""
+        self._tick_countdown()
+
+    def _tick_countdown(self):
+        """Tick co sekundę — aktualizuje odliczanie rate-limitu."""
+        if not self.root or not self.root.winfo_exists():
+            return
+        cfg = wczytaj_config()
+        rl_str = cfg.get("rate_limit_do", "")
+        if not rl_str:
+            self._ukryj_countdown()
+            return
+        try:
+            # obsługa formatu "YYYY-MM-DD HH:MM:SS" i starszego "HH:MM"
+            if len(rl_str) > 5:
+                koniec = datetime.strptime(rl_str, "%Y-%m-%d %H:%M:%S")
+            else:
+                h, m = map(int, rl_str.split(":"))
+                koniec = datetime.now().replace(hour=h, minute=m, second=0)
+            delta = koniec - datetime.now()
+            sekundy = int(delta.total_seconds())
+            if sekundy <= 0:
+                # Limit minął — wyczyść automatycznie
+                cfg.pop("rate_limit_do", None)
+                CONFIG_JSON.write_text(
+                    json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._ukryj_countdown()
+                return
+            # Pokaż odliczanie
+            godz  = sekundy // 3600
+            min_  = (sekundy % 3600) // 60
+            sek   = sekundy % 60
+            if godz > 0:
+                tekst = f"{godz}:{min_:02d}:{sek:02d}"
+            else:
+                tekst = f"{min_:02d}:{sek:02d}"
+            self.lbl_rl_status.config(
+                text="  ⚠  Rate limit aktywny — pozostało: ",
+                fg=K["czerwony"])
+            self.lbl_rl_countdown.config(text=tekst)
+            self.lbl_rl_countdown.pack(anchor="w", padx=8, pady=(0, 2))
+            self.btn_rl_ustaw.pack_forget()
+            self.btn_rl_clear.pack(side="right", padx=2)
+        except Exception:
+            self._ukryj_countdown()
+            return
+        self.root.after(1000, self._tick_countdown)
+
+    def _ukryj_countdown(self):
+        """Ukrywa panel odliczania, wraca do stanu normalnego."""
+        self.lbl_rl_status.config(
+            text="  ✓  Brak aktywnego rate-limitu", fg=K["zielony"])
+        self.lbl_rl_countdown.pack_forget()
+        self.btn_rl_clear.pack_forget()
+        self.btn_rl_ustaw.pack(side="right", padx=2)
 
     def _dialog_saldo(self):
         """Okienko do wpisania nowego salda po doładowaniu konta."""
@@ -473,15 +722,12 @@ class OkienkoDane:
         # PRO
         self.lbls["ekwiwalent"].config(text=f"${koszt:.4f} USD")
 
-        # Rate-limit info
+        # Rate-limit — uruchom odliczanie jeśli aktywne
         rl = cfg.get("rate_limit_do", "")
         if rl:
-            self.lbl_rl.config(
-                text=f"  ⚠  Rate limit aktywny do: {rl}",
-                fg=K["czerwony"])
+            self._start_countdown_rl()
         else:
-            self.lbl_rl.config(text="  ✓  Brak aktywnego rate-limitu",
-                               fg=K["zielony"])
+            self._ukryj_countdown()
 
         # API — saldo kumulatywne od daty wpisania
         if saldo is not None and data_wpisania:
@@ -583,6 +829,23 @@ class MonitorApp:
         self.stats = czytaj_uzycie()
         self.okno  = OkienkoDane(self)
         self.icon  = None
+        # Wątek obserwujący JSONL — auto-wykrywanie rate-limitu
+        self._rl_watcher = RateLimitWatcher(self._on_rate_limit_wykryty)
+
+    def _on_rate_limit_wykryty(self, reset: datetime):
+        """Wywoływane przez watcher gdy JSONL zawiera wpis rate-limit."""
+        cfg = wczytaj_config()
+        # Zapisz tylko jeśli limit jeszcze nie był ustawiony lub jest wcześniejszy
+        stary = cfg.get("rate_limit_do", "")
+        nowy_str = reset.strftime("%Y-%m-%d %H:%M:%S")
+        if stary and stary >= nowy_str:
+            return
+        cfg["rate_limit_do"] = nowy_str
+        CONFIG_JSON.write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Uruchom countdown w wątku GUI (thread-safe przez after)
+        if self.okno.root and self.okno.root.winfo_exists():
+            self.okno.root.after(0, self.okno._start_countdown_rl)
 
     def przelacz(self, nowy_tryb):
         self.tryb = nowy_tryb
@@ -653,6 +916,7 @@ class MonitorApp:
             self.okno.pokaz()
 
     def _zakoncz(self, icon=None, item=None):
+        self._rl_watcher.stop()
         self.icon.stop()
         if self.okno.root and self.okno.root.winfo_exists():
             self.okno.root.after(0, self.okno.root.destroy)
