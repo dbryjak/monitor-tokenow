@@ -827,11 +827,15 @@ class MonitorApp:
         cfg       = wczytaj_config()
         self.tryb = cfg.get("tryb", "pro")
 
-        # Wyczyść przeterminowany rate-limit zanim GUI się zbuduje
+        # Wyczyść rate-limit zanim GUI się zbuduje:
+        # - jeśli już minął, LUB
+        # - jeśli >3h w przyszłości (błąd parsowania "resets 8pm" z poprzedniego dnia)
         rl_str = cfg.get("rate_limit_do", "")
         if rl_str:
             try:
-                if datetime.now() >= datetime.strptime(rl_str, "%Y-%m-%d %H:%M:%S"):
+                koniec = datetime.strptime(rl_str, "%Y-%m-%d %H:%M:%S")
+                pozostalo = (koniec - datetime.now()).total_seconds()
+                if pozostalo <= 0 or pozostalo > 10800:
                     cfg.pop("rate_limit_do")
                     CONFIG_JSON.write_text(
                         json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
