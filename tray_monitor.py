@@ -227,7 +227,7 @@ def _parsuj_reset_czas(tekst: str):
     teraz  = datetime.now()
     reset  = teraz.replace(hour=godz, minute=min_, second=0, microsecond=0)
     if reset <= teraz:
-        reset += timedelta(days=1)
+        return None  # limit już minął — nie pokazuj odliczania
     return reset
 
 
