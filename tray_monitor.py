@@ -826,6 +826,20 @@ class MonitorApp:
     def __init__(self):
         cfg       = wczytaj_config()
         self.tryb = cfg.get("tryb", "pro")
+
+        # Wyczyść przeterminowany rate-limit zanim GUI się zbuduje
+        rl_str = cfg.get("rate_limit_do", "")
+        if rl_str:
+            try:
+                if datetime.now() >= datetime.strptime(rl_str, "%Y-%m-%d %H:%M:%S"):
+                    cfg.pop("rate_limit_do")
+                    CONFIG_JSON.write_text(
+                        json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                cfg.pop("rate_limit_do", None)
+                CONFIG_JSON.write_text(
+                    json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
         self.stats = czytaj_uzycie()
         self.okno  = OkienkoDane(self)
         self.icon  = None
