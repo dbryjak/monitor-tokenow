@@ -240,9 +240,15 @@ class RateLimitWatcher:
     def __init__(self, callback_wykryto):
         """callback_wykryto(reset_datetime) — wywoływane gdy limit wykryty."""
         self._callback  = callback_wykryto
-        self._pozycje   = {}   # ścieżka → rozmiar pliku przy ostatnim odczycie
         self._stop_evt  = threading.Event()
-        self._watek     = threading.Thread(target=self._petla, daemon=True)
+        # Ustaw pozycje na obecny rozmiar — czytaj tylko linie dodane PO starcie
+        self._pozycje = {}
+        for plik in self.CLAUDE_DIR.rglob("*.jsonl"):
+            try:
+                self._pozycje[plik] = plik.stat().st_size
+            except OSError:
+                pass
+        self._watek = threading.Thread(target=self._petla, daemon=True)
         self._watek.start()
 
     def stop(self):
