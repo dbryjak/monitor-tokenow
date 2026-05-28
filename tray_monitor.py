@@ -374,7 +374,7 @@ class OkienkoDane:
         self.root = root
         root.title("Monitor Tokenów")
         root.configure(bg=K["tlo"])
-        root.resizable(False, False)
+        root.resizable(True, True)
         root.attributes("-topmost", True)
 
         # Nie pokazuj w pasku zadań — okienko chowa się do tray
@@ -387,7 +387,17 @@ class OkienkoDane:
         # "X" = tylko ukryj (nie wyłącza programu)
         root.protocol("WM_DELETE_WINDOW", self.ukryj)
 
-        pad = {"padx": 18}
+        # Zmniejsz czcionki na małych ekranach (wysokość < 800px)
+        wys_ekranu = root.winfo_screenheight()
+        global F_NORM, F_BOLD, F_TITLE, F_SMALL, F_VAL, FONT
+        if wys_ekranu < 800:
+            F_NORM  = (FONT, 9)
+            F_BOLD  = (FONT, 9, "bold")
+            F_TITLE = (FONT, 11, "bold")
+            F_SMALL = (FONT, 8)
+            F_VAL   = (FONT, 10, "bold")
+
+        pad = {"padx": 14 if wys_ekranu < 800 else 18}
 
         # ── Nagłówek ──────────────────────────────────────────────────────
         tk.Label(root, text="Monitor Tokenów Claude",
@@ -473,7 +483,7 @@ class OkienkoDane:
         # Wiersz odliczania (widoczny tylko gdy aktywny)
         self.lbl_rl_countdown = tk.Label(
             self.rl_f, text="", bg=K["tlo2"],
-            fg=K["czerwony"], font=(FONT, 18, "bold"))
+            fg=K["czerwony"], font=(FONT, 14 if root.winfo_screenheight() < 800 else 18, "bold"))
         # nie pack — pokazujemy tylko gdy aktywny
 
         separator(root)
